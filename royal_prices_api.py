@@ -48,6 +48,7 @@ class RoyalClient:
         )
         self.organization_id = ""
         self.domain_key = ""
+        self.site_filial_id = ""
         self.token = ""
         self.token_created_at = 0.0
         self.product_asset_base = ""
@@ -79,6 +80,7 @@ class RoyalClient:
 
         self.organization_id = str(data["organizacao"]["id"])
         self.domain_key = data["organizacao"]["enderecoServidor"]
+        self.site_filial_id = str(data["id"])
 
         login = self.session.post(
             self._api_url("/auth/loja/login"),
@@ -94,7 +96,7 @@ class RoyalClient:
         self.token = login.json()["data"]
         self.token_created_at = time.time()
 
-        omni = self.session.get(self._api_url(f"/loja/omnichannel/{self.FILIAL_ID}"), headers=self._headers(), timeout=30)
+        omni = self.session.get(self._api_url(f"/loja/omnichannel/{self.site_filial_id}"), headers=self._headers(), timeout=30)
         omni.raise_for_status()
         for location in omni.json().get("data", {}).get("localizacaoArquivos", []):
             if location.get("model") == "Produto":
