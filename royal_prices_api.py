@@ -93,9 +93,13 @@ class RoyalClient:
         self.token = login.json()["data"]
         self.token_created_at = time.time()
 
-    def get_offers(self, refresh: bool = False) -> list:
-        if not refresh and self.cache["items"] and time.time() - self.cache["created_at"] < self.cache_ttl:
-            return self.cache["items"]
+    def get_offers(self, limit: Optional[int] = None, query: str = "", refresh: bool = False) -> list:
+        can_use_cache = self.cache["items"] and time.time() - self.cache["created_at"] < self.cache_ttl
+        if not refresh and can_use_cache:
+            items = self.cache["items"]
+            if query:
+                items = [item for item in items if query in str(item.get("name") or "").lower()]
+            return items[:limit] if limit else items
 
         self.bootstrap()
 
@@ -115,11 +119,17 @@ class RoyalClient:
             total_pages = int(paginator.get("total_pages") or page)
 
             for product in payload.get("data") or []:
-                products.append(self._format_product(product))
+                formatted_product = self._format_product(product)
+                if query and query not in str(formatted_product.get("name") or "").lower():
+                    continue
+                products.append(formatted_product)
+                if limit and len(products) >= limit:
+                    return products
 
             page += 1
 
-        self.cache = {"created_at": time.time(), "items": products}
+        if not query and not limit:
+            self.cache = {"created_at": time.time(), "items": products}
         return products
 
     @staticmethod
@@ -174,11 +184,7 @@ def royal_prices():
         refresh = request.args.get("refresh", "false").lower() in {"1", "true", "sim"}
         query = (request.args.get("q") or "").strip().lower()
 
-        items = royal.get_offers(refresh=refresh)
-        if query:
-            items = [item for item in items if query in str(item.get("name") or "").lower()]
-        if limit:
-            items = items[:limit]
+        items = royal.get_offers(limit=limit, query=query, refresh=refresh)
 
         return jsonify({"success": True, "count": len(items), "items": items})
     except requests.HTTPError as error:
