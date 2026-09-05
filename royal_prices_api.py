@@ -93,8 +93,8 @@ class RoyalClient:
         self.token = login.json()["data"]
         self.token_created_at = time.time()
 
-    def get_offers(self, limit: Optional[int] = None, refresh: bool = False) -> list:
-        if not refresh and not limit and self.cache["items"] and time.time() - self.cache["created_at"] < self.cache_ttl:
+    def get_offers(self, refresh: bool = False) -> list:
+        if not refresh and self.cache["items"] and time.time() - self.cache["created_at"] < self.cache_ttl:
             return self.cache["items"]
 
         self.bootstrap()
@@ -116,8 +116,6 @@ class RoyalClient:
 
             for product in payload.get("data") or []:
                 products.append(self._format_product(product))
-                if limit and len(products) >= limit:
-                    return products
 
             page += 1
 
@@ -159,6 +157,16 @@ def health():
     return jsonify({"status": "ok", "service": "royal-prices-api"})
 
 
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify(
+        {
+            "service": "royal-prices-api",
+            "endpoints": ["/health", "/royal/precos", "/royal/precos?q=arroz", "/royal/precos?limit=20"],
+        }
+    )
+
+
 @app.route("/royal/precos", methods=["GET"])
 def royal_prices():
     try:
@@ -166,9 +174,11 @@ def royal_prices():
         refresh = request.args.get("refresh", "false").lower() in {"1", "true", "sim"}
         query = (request.args.get("q") or "").strip().lower()
 
-        items = royal.get_offers(limit=limit, refresh=refresh)
+        items = royal.get_offers(refresh=refresh)
         if query:
             items = [item for item in items if query in str(item.get("name") or "").lower()]
+        if limit:
+            items = items[:limit]
 
         return jsonify({"success": True, "count": len(items), "items": items})
     except requests.HTTPError as error:
