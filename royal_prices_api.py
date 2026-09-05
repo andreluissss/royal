@@ -30,6 +30,7 @@ CORS(app)
 class RoyalClient:
     SITE_URL = "https://www.royalsupermercados.com.br"
     API_ROOT = "https://services.vipcommerce.com.br/api-admin/v1"
+    DEFAULT_PRODUCT_ASSET_BASE = "https://produto-assets-vipcommerce-com-br.br-se1.magaluobjects.com"
     PUBLIC_AUTH_KEY = "df072f85df9bf7dd71b6811c34bdbaa4f219d98775b56cff9dfa5f8ca1bf8469"
     PUBLIC_USERNAME = "loja"
     FILIAL_ID = "2"
@@ -154,9 +155,8 @@ class RoyalClient:
             return ""
         if filename.startswith("http"):
             return filename
-        if not self.product_asset_base:
-            return filename
-        return f"{self.product_asset_base}/500x500/{filename}"
+        asset_base = self.product_asset_base or self.DEFAULT_PRODUCT_ASSET_BASE
+        return f"{asset_base}/500x500/{filename}"
 
     def _format_product(self, product: dict) -> dict:
         offer = product.get("oferta") or {}
