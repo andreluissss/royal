@@ -1,5 +1,5 @@
 """
-Backend simples para consultar precos/ofertas do Royal Supermercados.
+Backend simples para consultar precos/produtos do Royal Supermercados.
 
 Rode:
     python royal_prices_api.py
@@ -9,6 +9,7 @@ Endpoints:
     GET /royal/precos
     GET /royal/precos?q=arroz
     GET /royal/precos?limit=20
+    GET /royal/precos?offers_only=1
 """
 
 import os
@@ -53,7 +54,8 @@ class RoyalClient:
         self.token = ""
         self.token_created_at = 0.0
         self.product_asset_base = ""
-        self.cache = {"created_at": 0.0, "items": []}
+        self.departments = []
+        self.cache = {"all": {"created_at": 0.0, "items": []}, "offers": {"created_at": 0.0, "items": []}}
         self.cache_ttl = int(os.getenv("ROYAL_CACHE_TTL_SECONDS", "900"))
 
     def _api_url(self, path: str) -> str:
@@ -104,23 +106,40 @@ class RoyalClient:
                 self.product_asset_base = str(location.get("localizacao") or "").rstrip("/")
                 break
 
-    def get_offers(self, limit: Optional[int] = None, query: str = "", refresh: bool = False) -> list:
-        can_use_cache = self.cache["items"] and time.time() - self.cache["created_at"] < self.cache_ttl
-        if not refresh and can_use_cache:
-            items = self.cache["items"]
-            if query:
-                items = [item for item in items if query in str(item.get("name") or "").lower()]
-            return items[:limit] if limit else items
+    def _load_departments(self):
+        if self.departments:
+            return
 
         self.bootstrap()
+        url = self._api_url(
+            f"/filial/{self.FILIAL_ID}/centro_distribuicao/{self.CD_ID}/loja/"
+            "classificacoes_mercadologicas/departamentos/arvore"
+        )
+        response = self.session.get(url, headers=self._headers(), timeout=30)
+        response.raise_for_status()
 
+        departments = []
+
+        def walk(items):
+            for item in items or []:
+                item_id = item.get("classificacao_mercadologica_id")
+                level = str(item.get("nivel") or "").strip().lower()
+                name = str(item.get("descricao") or "").strip()
+                if item_id is not None and level.startswith("depart"):
+                    departments.append({"id": int(item_id), "name": name})
+                walk(item.get("children") or [])
+
+        walk(response.json().get("data") or [])
+        self.departments = departments
+
+    def _fetch_listing(self, path: str, limit: Optional[int] = None, query: str = "") -> list:
         products = []
         page = 1
         total_pages = None
 
         while total_pages is None or page <= total_pages:
             url = self._api_url(
-                f"/filial/{self.FILIAL_ID}/centro_distribuicao/{self.CD_ID}/loja/produtos/em-oferta?page={page}&"
+                f"/filial/{self.FILIAL_ID}/centro_distribuicao/{self.CD_ID}/loja/{path}?page={page}&"
             )
             response = self.session.get(url, headers=self._headers(), timeout=30)
             response.raise_for_status()
@@ -139,9 +158,52 @@ class RoyalClient:
 
             page += 1
 
-        if not query and not limit:
-            self.cache = {"created_at": time.time(), "items": products}
         return products
+
+    def get_products(
+        self,
+        limit: Optional[int] = None,
+        query: str = "",
+        refresh: bool = False,
+        offers_only: bool = False,
+    ) -> list:
+        cache_key = "offers" if offers_only else "all"
+        cache = self.cache[cache_key]
+        can_use_cache = cache["items"] and time.time() - cache["created_at"] < self.cache_ttl
+        if not refresh and can_use_cache:
+            items = cache["items"]
+            if query:
+                items = [item for item in items if query in str(item.get("name") or "").lower()]
+            return items[:limit] if limit else items
+
+        self.bootstrap()
+
+        if offers_only:
+            products = self._fetch_listing("produtos/em-oferta", limit=limit, query=query)
+        else:
+            self._load_departments()
+            products = []
+            seen_ids = set()
+            for department in self.departments:
+                path = f"classificacoes_mercadologicas/departamentos/{department['id']}/produtos"
+                remaining = limit - len(products) if limit else None
+                for product in self._fetch_listing(path, limit=remaining, query=query):
+                    product_id = product.get("product_id")
+                    if product_id in seen_ids:
+                        continue
+                    seen_ids.add(product_id)
+                    products.append(product)
+                    if limit and len(products) >= limit:
+                        break
+                if limit and len(products) >= limit:
+                    break
+
+        if not query and not limit:
+            self.cache[cache_key] = {"created_at": time.time(), "items": products}
+        return products
+
+    def get_offers(self, limit: Optional[int] = None, query: str = "", refresh: bool = False) -> list:
+        return self.get_products(limit=limit, query=query, refresh=refresh, offers_only=True)
 
     @staticmethod
     def _to_float(value):
@@ -193,7 +255,13 @@ def index():
     return jsonify(
         {
             "service": "royal-prices-api",
-            "endpoints": ["/health", "/royal/precos", "/royal/precos?q=arroz", "/royal/precos?limit=20"],
+            "endpoints": [
+                "/health",
+                "/royal/precos",
+                "/royal/precos?q=arroz",
+                "/royal/precos?limit=20",
+                "/royal/precos?offers_only=1",
+            ],
         }
     )
 
@@ -203,11 +271,12 @@ def royal_prices():
     try:
         limit = request.args.get("limit", type=int)
         refresh = request.args.get("refresh", "false").lower() in {"1", "true", "sim"}
+        offers_only = request.args.get("offers_only", "false").lower() in {"1", "true", "sim"}
         query = (request.args.get("q") or "").strip().lower()
 
-        items = royal.get_offers(limit=limit, query=query, refresh=refresh)
+        items = royal.get_products(limit=limit, query=query, refresh=refresh, offers_only=offers_only)
 
-        return jsonify({"success": True, "count": len(items), "items": items})
+        return jsonify({"success": True, "count": len(items), "offers_only": offers_only, "items": items})
     except requests.HTTPError as error:
         status = error.response.status_code if error.response is not None else 500
         return jsonify({"success": False, "error": str(error)}), status
