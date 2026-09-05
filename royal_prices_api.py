@@ -50,6 +50,7 @@ class RoyalClient:
         self.domain_key = ""
         self.token = ""
         self.token_created_at = 0.0
+        self.product_asset_base = ""
         self.cache = {"created_at": 0.0, "items": []}
         self.cache_ttl = int(os.getenv("ROYAL_CACHE_TTL_SECONDS", "900"))
 
@@ -92,6 +93,13 @@ class RoyalClient:
         login.raise_for_status()
         self.token = login.json()["data"]
         self.token_created_at = time.time()
+
+        omni = self.session.get(self._api_url(f"/loja/omnichannel/{self.FILIAL_ID}"), headers=self._headers(), timeout=30)
+        omni.raise_for_status()
+        for location in omni.json().get("data", {}).get("localizacaoArquivos", []):
+            if location.get("model") == "Produto":
+                self.product_asset_base = str(location.get("localizacao") or "").rstrip("/")
+                break
 
     def get_offers(self, limit: Optional[int] = None, query: str = "", refresh: bool = False) -> list:
         can_use_cache = self.cache["items"] and time.time() - self.cache["created_at"] < self.cache_ttl
@@ -139,10 +147,20 @@ class RoyalClient:
         except (TypeError, ValueError):
             return None
 
+    def _image_url(self, filename: str) -> str:
+        if not filename:
+            return ""
+        if filename.startswith("http"):
+            return filename
+        if not self.product_asset_base:
+            return filename
+        return f"{self.product_asset_base}/500x500/{filename}"
+
     def _format_product(self, product: dict) -> dict:
         offer = product.get("oferta") or {}
         price = self._to_float(product.get("preco"))
         sale_price = self._to_float(offer.get("preco_oferta") or offer.get("menor_preco"))
+        image = str(product.get("imagem") or "")
 
         return {
             "product_id": product.get("produto_id"),
@@ -154,7 +172,8 @@ class RoyalClient:
             "final_price": sale_price if sale_price is not None else price,
             "unit": product.get("unidade_sigla"),
             "barcode": product.get("codigo_barras"),
-            "image": product.get("imagem"),
+            "image": image,
+            "image_url": self._image_url(image),
             "is_offer": bool(product.get("em_oferta") or offer),
         }
 
